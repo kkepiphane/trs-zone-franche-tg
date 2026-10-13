@@ -10,7 +10,7 @@ Le TRS se décompose en trois facteurs :
     TRS           = Disponibilité x Performance x Qualité
 
 Ces fonctions sont indépendantes de l'interface : elles peuvent être
-utilisées dans un script, un notebook ou le tableau de bord Streamlit.
+utilisées dans un script, un notebook ou le tableau de bord Dash.
 """
 
 import pandas as pd

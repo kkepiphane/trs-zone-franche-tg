@@ -1,36 +1,37 @@
 """
-app.py — Tableau de bord TRS & Maintenance predictive (Master Big Data)
------------------------------------------------------------------------
-Chaine complete d'un projet Big Data, en 4 etapes (onglets) :
+app.py — Tableau de bord TRS & Maintenance predictive (Plotly Dash)
+-------------------------------------------------------------------
+Chaine Big Data complete, de la donnee brute jusqu'a la prediction :
 
-  1. Ingestion    : upload du CSV brut + validation du schema
-  2. Preparation  : nettoyage + rapport de qualite des donnees
-  3. Analyse TRS  : calcul, KPI, classement, decomposition, diagnostic
-  4. Prediction   : prevision du TRS + risque de panne (Machine Learning)
+  0. Vue d'ensemble : KPI, alerte maintenance, graphiques cles
+  1. Ingestion      : upload du CSV brut + validation du schema
+  2. Preparation    : nettoyage + rapport de qualite des donnees
+  3. Analyse TRS    : KPI, classement, decomposition, diagnostic, evolution
+                      (graphiques lies : cliquer une machine la met en avant)
+  4. Prediction     : risque de panne (Random Forest) + prevision du TRS
 
-Lancement :  streamlit run app.py
+Les calculs reutilisent calcul_trs.py et prediction.py sans modification.
+
+Lancement :  python app.py   ->  http://127.0.0.1:8050
+Production : gunicorn app:server
 """
 
+import base64
+import io
 import os
+import uuid
+
 import joblib
 import pandas as pd
-import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+from dash import ALL, Dash, Input, Output, State, ctx, dcc, html, no_update
 
 from calcul_trs import (
-    charger_donnees, nettoyer, calculer_trs,
-    synthese_par_machine, trs_global, COLONNES_REQUISES,
+    nettoyer, calculer_trs, synthese_par_machine, trs_global, COLONNES_REQUISES,
 )
 import generer_donnees
 import prediction as pred
-
-st.set_page_config(
-    page_title="TRS & Maintenance predictive",
-    page_icon="https://img.icons8.com/ios-filled/50/1B2A4A/settings.png",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
 
 # ---------------------------------------------------------------
 #  Palette
@@ -40,319 +41,125 @@ SLATE  = "#3D5A80"
 ACCENT = "#E07A5F"
 GREEN  = "#2D6A4F"
 RED    = "#C1292E"
-AMBER  = "#D4A017"
-LIGHT  = "#F0F2F6"
-WHITE  = "#FFFFFF"
+AMBER  = "#C98A0B"
 TEXT   = "#2C3E50"
 MUTED  = "#7F8C8D"
+GRID   = "#EEF1F5"
+GHOST  = "#C9D1DC"
+COULEURS_MACHINES = [NAVY, ACCENT, "#3D8FB6", GREEN, AMBER, "#8E6CB8", "#5C6B7A"]
+
 SEUIL_EXCELLENCE = 0.85
+COLONNES_PREDICTION = ["nb_arrets", "micro_arrets", "temp_moteur"]
+NOMS_FEATURES = {
+    "trs_moyen": "TRS moyen",
+    "trs_pente": "Tendance du TRS",
+    "dispo_moyenne": "Disponibilité moyenne",
+    "arrets_moyens": "Arrêts / jour",
+    "micro_moyens": "Micro-arrêts / jour",
+    "temp_moyenne": "Température moteur",
+}
+NIVEAUX = {
+    "ELEVE":  ("Élevé", RED),
+    "MODERE": ("Modéré", AMBER),
+    "FAIBLE": ("Faible", GREEN),
+}
+GRAPH_CONFIG = {
+    "displaylogo": False,
+    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d"],
+    # export PNG haute definition (bouton appareil photo du graphique)
+    "toImageButtonOptions": {"format": "png", "scale": 2},
+}
 
 # ---------------------------------------------------------------
-#  CSS personnalise
+#  Donnees : cache cote serveur, une entree par jeu de donnees
 # ---------------------------------------------------------------
-st.markdown("""
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-}
-
-/* Header hero */
-.hero-header {
-    background: linear-gradient(135deg, #1B2A4A 0%, #3D5A80 100%);
-    padding: 2.5rem 2.5rem 2rem;
-    border-radius: 16px;
-    margin-bottom: 1.8rem;
-    position: relative;
-    overflow: hidden;
-}
-.hero-header::before {
-    content: '';
-    position: absolute;
-    top: -50%;
-    right: -10%;
-    width: 300px;
-    height: 300px;
-    background: rgba(255,255,255,0.04);
-    border-radius: 50%;
-}
-.hero-header h1 {
-    color: #FFFFFF;
-    font-size: 2rem;
-    font-weight: 700;
-    margin: 0 0 0.4rem 0;
-    letter-spacing: -0.5px;
-}
-.hero-header p {
-    color: rgba(255,255,255,0.75);
-    font-size: 0.95rem;
-    margin: 0;
-    font-weight: 300;
-}
-.hero-badge {
-    display: inline-block;
-    background: rgba(255,255,255,0.12);
-    color: #fff;
-    font-size: 0.72rem;
-    font-weight: 500;
-    padding: 4px 12px;
-    border-radius: 20px;
-    margin-top: 0.8rem;
-    letter-spacing: 0.5px;
-    text-transform: uppercase;
-}
-
-/* Tabs */
-.stTabs [data-baseweb="tab-list"] {
-    gap: 0;
-    background: #F0F2F6;
-    border-radius: 12px;
-    padding: 4px;
-}
-.stTabs [data-baseweb="tab"] {
-    border-radius: 10px;
-    padding: 10px 24px;
-    font-weight: 500;
-    font-size: 0.88rem;
-    color: #7F8C8D;
-    background: transparent;
-    border: none;
-}
-.stTabs [aria-selected="true"] {
-    background: #FFFFFF !important;
-    color: #1B2A4A !important;
-    font-weight: 600;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
-}
-
-/* KPI card */
-.kpi-card {
-    background: #FFFFFF;
-    border: 1px solid #E8ECF1;
-    border-radius: 12px;
-    padding: 1.3rem 1.5rem;
-    text-align: center;
-    transition: box-shadow 0.2s;
-}
-.kpi-card:hover {
-    box-shadow: 0 4px 16px rgba(27,42,74,0.08);
-}
-.kpi-label {
-    font-size: 0.78rem;
-    font-weight: 500;
-    color: #7F8C8D;
-    text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin-bottom: 0.3rem;
-}
-.kpi-value {
-    font-size: 2rem;
-    font-weight: 700;
-    color: #1B2A4A;
-    line-height: 1.1;
-}
-.kpi-delta {
-    font-size: 0.8rem;
-    margin-top: 0.3rem;
-    font-weight: 500;
-}
-
-/* Section title */
-.section-title {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: #1B2A4A;
-    margin: 1.5rem 0 0.8rem;
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-.section-title .icon {
-    font-size: 1rem;
-    opacity: 0.7;
-}
-
-/* Content card */
-.content-card {
-    background: #FFFFFF;
-    border: 1px solid #E8ECF1;
-    border-radius: 12px;
-    padding: 1.5rem;
-    margin-bottom: 1rem;
-}
-
-/* Risk card */
-.risk-card {
-    background: #FFFFFF;
-    border: 1px solid #E8ECF1;
-    border-radius: 10px;
-    padding: 1rem 1.4rem;
-    margin: 0.5rem 0;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    transition: transform 0.15s, box-shadow 0.15s;
-}
-.risk-card:hover {
-    transform: translateY(-1px);
-    box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-}
-.risk-machine {
-    font-weight: 600;
-    color: #1B2A4A;
-    font-size: 0.95rem;
-}
-.risk-badge {
-    font-size: 0.78rem;
-    font-weight: 600;
-    padding: 5px 14px;
-    border-radius: 20px;
-    letter-spacing: 0.3px;
-}
-
-/* Qualite checklist */
-.check-list {
-    list-style: none;
-    padding: 0;
-    margin: 0;
-}
-.check-list li {
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #F0F2F6;
-    color: #2C3E50;
-    font-size: 0.9rem;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-}
-.check-list li:last-child { border-bottom: none; }
-.check-icon {
-    color: #2D6A4F;
-    font-weight: 700;
-    font-size: 0.85rem;
-}
-
-/* Diagnostic */
-.diagnostic-card {
-    background: linear-gradient(135deg, #FAFBFD, #F0F2F6);
-    border: 1px solid #E8ECF1;
-    border-left: 4px solid #E07A5F;
-    border-radius: 10px;
-    padding: 1.2rem 1.5rem;
-    margin: 1rem 0;
-}
-.diagnostic-card .title {
-    font-size: 0.78rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.6px;
-    color: #E07A5F;
-    margin-bottom: 0.4rem;
-}
-.diagnostic-card .body {
-    color: #2C3E50;
-    font-size: 0.92rem;
-    line-height: 1.6;
-}
-
-/* Footer */
-.app-footer {
-    text-align: center;
-    padding: 2rem 0 1rem;
-    color: #7F8C8D;
-    font-size: 0.8rem;
-    border-top: 1px solid #E8ECF1;
-    margin-top: 2rem;
-}
-
-/* Step badge */
-.step-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    background: #F0F2F6;
-    color: #1B2A4A;
-    font-size: 0.82rem;
-    font-weight: 600;
-    padding: 6px 14px;
-    border-radius: 8px;
-    margin-bottom: 0.6rem;
-}
-.step-num {
-    background: #1B2A4A;
-    color: #fff;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.72rem;
-    font-weight: 700;
-}
-
-/* Streamlit overrides */
-div[data-testid="stMetric"] {
-    background: #FFFFFF;
-    border: 1px solid #E8ECF1;
-    border-radius: 12px;
-    padding: 1rem 1.2rem;
-    box-shadow: none;
-}
-div[data-testid="stMetric"]:hover {
-    box-shadow: 0 4px 16px rgba(27,42,74,0.06);
-}
-div[data-testid="stMetric"] label {
-    font-size: 0.78rem !important;
-    font-weight: 500 !important;
-    color: #7F8C8D !important;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-}
-div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    font-size: 1.7rem !important;
-    font-weight: 700 !important;
-    color: #1B2A4A !important;
-}
-
-.stDownloadButton > button,
-.stButton > button {
-    border-radius: 8px;
-    font-weight: 500;
-    padding: 0.5rem 1.2rem;
-    font-size: 0.88rem;
-    border: 1px solid #E8ECF1;
-    transition: all 0.2s;
-}
-
-div[data-testid="stFileUploader"] {
-    border-radius: 12px;
-}
-
-.stDataFrame {
-    border-radius: 10px;
-    overflow: hidden;
-}
-
-.stDivider {
-    margin: 1.5rem 0 !important;
-}
-
-hr {
-    border-color: #E8ECF1 !important;
-}
-</style>
-""", unsafe_allow_html=True)
+_DONNEES = {}   # cle -> (DataFrame brut, nom affiche)
+_CACHE = {}     # cle -> resultats calcules (nettoyage, TRS, modele)
 
 
-# ---------------------------------------------------------------
-#  Helpers
-# ---------------------------------------------------------------
-def donnees_par_defaut():
+def donnees_demo():
     if not os.path.exists("production.csv"):
         generer_donnees.generer().to_csv("production.csv", index=False)
     return pd.read_csv("production.csv")
+
+
+_DONNEES["demo"] = (donnees_demo(), "Données simulées")
+
+
+def preparer(cle):
+    """Nettoyage + calcul du TRS, effectues une seule fois par jeu de donnees."""
+    if cle not in _DONNEES:
+        cle = "demo"
+    if cle in _CACHE:
+        return _CACHE[cle]
+    brut, nom = _DONNEES[cle]
+    df = brut.copy()
+    manq = df[COLONNES_REQUISES].isna().sum()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    clean = calculer_trs(nettoyer(df))
+    _CACHE[cle] = {
+        "cle": cle, "nom": nom, "brut": brut, "clean": clean,
+        "n0": len(brut), "n1": len(clean), "manquantes": manq[manq > 0],
+        "ml": None,
+    }
+    return _CACHE[cle]
+
+
+def modele_ml(cle):
+    """Features + modele de risque + risque actuel par machine (mis en cache)."""
+    p = preparer(cle)
+    if p["ml"] is not None:
+        return p["ml"]
+    df = p["clean"]
+    ml = {"ok": False, "raison": "", "source": ""}
+    absentes = [c for c in COLONNES_PREDICTION if c not in df.columns]
+    if absentes:
+        ml["raison"] = ("Colonnes nécessaires au modèle de risque absentes : "
+                        + ", ".join(absentes) + ".")
+        p["ml"] = ml
+        return ml
+
+    feats = pred.construire_features(df)
+    if feats.empty:
+        ml["raison"] = "Historique trop court pour construire les indicateurs."
+        p["ml"] = ml
+        return ml
+
+    # Le modele exporte par le notebook a ete entraine sur le jeu de
+    # demonstration : on ne l'utilise que pour ces donnees-la.
+    modele = None
+    if p["cle"] == "demo" and os.path.exists("modele_risque.joblib"):
+        try:
+            modele = joblib.load("modele_risque.joblib")["modele"]
+        except Exception:
+            modele = None
+    if modele is not None:
+        res = pred.evaluer_modele_charge(feats, modele)
+        source = "Modèle exporté par le notebook (modele_risque.joblib)"
+    else:
+        res = pred.entrainer_modele_risque(feats)
+        source = "Modèle entraîné sur les données chargées"
+
+    ml = dict(res)
+    ml["source"] = source
+    ml["n_echantillons"] = len(feats)
+    ml["n_pannes"] = int(feats["panne_future"].sum())
+    if res["ok"]:
+        ml["risque"] = pred.risque_actuel_par_machine(df, feats, res["modele"])
+    p["ml"] = ml
+    return ml
+
+
+# ---------------------------------------------------------------
+#  Formatage
+# ---------------------------------------------------------------
+def pct(v, d=1, signe=False):
+    s = f"{v * 100:+.{d}f}" if signe else f"{v * 100:.{d}f}"
+    return s.replace(".", ",") + " %"
+
+
+def nombre(n):
+    return f"{n:,}".replace(",", " ")
 
 
 def couleur_trs(v):
@@ -363,451 +170,751 @@ def couleur_trs(v):
     return RED
 
 
-def chart_layout(fig, height=360):
+def couleurs_par_machine(machines):
+    return {m: COULEURS_MACHINES[i % len(COULEURS_MACHINES)]
+            for i, m in enumerate(sorted(machines))}
+
+
+# ---------------------------------------------------------------
+#  Figures
+# ---------------------------------------------------------------
+def style_fig(fig, height=340, legende=True):
     fig.update_layout(
+        template="plotly_white",
         plot_bgcolor="rgba(0,0,0,0)",
         paper_bgcolor="rgba(0,0,0,0)",
         height=height,
-        margin=dict(t=24, b=16, l=16, r=16),
+        margin=dict(t=36, b=8, l=8, r=8),
         font=dict(family="Inter, sans-serif", size=12, color=TEXT),
-        xaxis=dict(gridcolor="#F0F2F6", zerolinecolor="#E8ECF1"),
-        yaxis=dict(gridcolor="#F0F2F6", zerolinecolor="#E8ECF1"),
-        showlegend=True,
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.02,
-            xanchor="right", x=1, font=dict(size=11),
-        ),
+        showlegend=legende,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1, font=dict(size=11), title=None),
+        hoverlabel=dict(font_family="Inter, sans-serif", bgcolor="white"),
     )
+    fig.update_xaxes(gridcolor=GRID, zeroline=False, linecolor=GRID)
+    fig.update_yaxes(gridcolor=GRID, zeroline=False, linecolor=GRID)
     return fig
 
 
-# ---------------------------------------------------------------
-#  Hero Header
-# ---------------------------------------------------------------
-st.markdown("""
-<div class="hero-header">
-    <h1>TRS & Maintenance Predictive</h1>
-    <p>Optimisation de la production des societes industrielles
-    de la Zone Franche au Togo</p>
-    <span class="hero-badge">Chaine Big Data complete</span>
-</div>
-""", unsafe_allow_html=True)
+def ligne_objectif(fig):
+    fig.add_hline(y=85, line_dash="dash", line_color=SLATE, line_width=1,
+                  annotation_text="Objectif 85 %", annotation_position="top left",
+                  annotation_font=dict(color=SLATE, size=11))
 
-if "df_brut" not in st.session_state:
-    st.session_state.df_brut = donnees_par_defaut()
 
-onglet1, onglet2, onglet3, onglet4 = st.tabs([
-    "  Ingestion  ",
-    "  Preparation  ",
-    "  Analyse TRS  ",
-    "  Prediction ML  ",
+def fig_trs_machines(df, focus=None, height=340):
+    syn = synthese_par_machine(df)
+    couleurs = [couleur_trs(v) for v in syn["trs"]]
+    opac = [1 if (focus is None or m == focus) else 0.35 for m in syn["machine"]]
+    fig = go.Figure(go.Bar(
+        x=syn["machine"], y=syn["trs"] * 100,
+        text=[pct(v) for v in syn["trs"]], textposition="outside",
+        marker=dict(color=couleurs, opacity=opac, line_width=0),
+        customdata=syn["machine"],
+        hovertemplate="<b>%{x}</b><br>TRS %{y:.1f} %<extra></extra>",
+    ))
+    ligne_objectif(fig)
+    fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 108], bargap=0.35)
+    return style_fig(fig, height, legende=False)
+
+
+def fig_evolution(df, focus=None, height=360):
+    evol = (df.groupby([pd.Grouper(key="date", freq="W"), "machine"])["trs"]
+              .mean().reset_index())
+    couleurs = couleurs_par_machine(evol["machine"].unique())
+    fig = go.Figure()
+    # la machine mise en avant est tracee en dernier (au premier plan)
+    ordre = sorted(evol["machine"].unique(), key=lambda m: m == focus)
+    for m in ordre:
+        e = evol[evol["machine"] == m]
+        en_avant = focus is None or m == focus
+        fig.add_trace(go.Scatter(
+            x=e["date"], y=e["trs"] * 100, name=m, mode="lines+markers",
+            line=dict(color=couleurs[m] if en_avant else GHOST,
+                      width=3.2 if m == focus else (2.2 if en_avant else 1.5)),
+            marker=dict(size=6 if en_avant else 4),
+            customdata=[m] * len(e),
+            hovertemplate=f"<b>{m}</b><br>%{{x|%d/%m/%Y}}<br>TRS %{{y:.1f}} %<extra></extra>",
+        ))
+    ligne_objectif(fig)
+    fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 105],
+                      hovermode="closest")
+    return style_fig(fig, height)
+
+
+def fig_decomposition(r, height=260):
+    comp = ["Disponibilité", "Performance", "Qualité"]
+    vals = [r["dispo"], r["perf"], r["qual"]]
+    fig = go.Figure(go.Bar(
+        x=vals, y=comp, orientation="h",
+        text=[pct(v, 0) for v in vals], textposition="outside",
+        marker=dict(color=[SLATE, NAVY, ACCENT], line_width=0),
+        hovertemplate="%{y} : %{x:.1%}<extra></extra>",
+    ))
+    fig.update_layout(xaxis_range=[0, 1.12], xaxis_tickformat=".0%",
+                      yaxis=dict(autorange="reversed"), bargap=0.4)
+    return style_fig(fig, height, legende=False)
+
+
+def fig_prevision(dfm, dates, vals, height=380):
+    hist = dfm.sort_values("date")
+    fig = go.Figure()
+    fig.add_vrect(x0=dates[0], x1=dates[-1], fillcolor=ACCENT, opacity=0.06,
+                  line_width=0)
+    fig.add_trace(go.Scatter(
+        x=hist["date"], y=hist["trs"] * 100, mode="lines", name="Historique",
+        line=dict(color=NAVY, width=2),
+        hovertemplate="%{x|%d/%m/%Y}<br>TRS %{y:.1f} %<extra></extra>",
+    ))
+    fig.add_trace(go.Scatter(
+        x=dates, y=vals * 100, mode="lines+markers", name="Prévision",
+        line=dict(color=ACCENT, dash="dash", width=2.5), marker=dict(size=5),
+        hovertemplate="%{x|%d/%m/%Y}<br>TRS prévu %{y:.1f} %<extra></extra>",
+    ))
+    ligne_objectif(fig)
+    fig.add_hline(y=50, line_dash="dot", line_color=RED, line_width=1,
+                  annotation_text="Seuil critique 50 %",
+                  annotation_position="bottom left",
+                  annotation_font=dict(color=RED, size=11))
+    fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 105])
+    return style_fig(fig, height)
+
+
+def fig_risque(risque, focus=None, height=None):
+    r = risque.sort_values("probabilite_panne")
+    couleurs = [NIVEAUX[n][1] for n in r["niveau"]]
+    opac = [1 if (focus is None or m == focus) else 0.45 for m in r["machine"]]
+    fig = go.Figure(go.Bar(
+        x=r["probabilite_panne"], y=r["machine"], orientation="h",
+        text=[f"{pct(p, 0)} · {NIVEAUX[n][0]}"
+              for p, n in zip(r["probabilite_panne"], r["niveau"])],
+        textposition="outside",
+        marker=dict(color=couleurs, opacity=opac, line_width=0),
+        customdata=r["machine"],
+        hovertemplate="<b>%{y}</b><br>Risque de panne %{x:.0%}<extra></extra>",
+    ))
+    for seuil in (0.30, 0.60):
+        fig.add_vline(x=seuil, line_dash="dot", line_color=GHOST, line_width=1)
+    fig.update_layout(xaxis_range=[0, 1.25], xaxis_tickformat=".0%", bargap=0.35)
+    return style_fig(fig, height or 70 + 46 * len(r), legende=False)
+
+
+def fig_importances(imp, height=300):
+    imp = imp.sort_values("importance")
+    fig = go.Figure(go.Bar(
+        x=imp["importance"], y=[NOMS_FEATURES.get(f, f) for f in imp["feature"]],
+        orientation="h", marker=dict(color=NAVY, line_width=0),
+        hovertemplate="%{y} : %{x:.3f}<extra></extra>",
+    ))
+    fig.update_layout(bargap=0.35)
+    return style_fig(fig, height, legende=False)
+
+
+def fig_confusion(cm, height=300):
+    fig = px.imshow(cm, text_auto=True, x=["Sain", "Panne"], y=["Sain", "Panne"],
+                    color_continuous_scale=["#F4F6F9", NAVY],
+                    labels=dict(x="Prédit", y="Réel", color="Nb"))
+    fig.update_traces(textfont_size=16)
+    fig.update_layout(coloraxis_showscale=False)
+    return style_fig(fig, height, legende=False)
+
+
+def graphe(fig, id_=None, cliquable=False):
+    kwargs = {"id": id_} if id_ else {}
+    return dcc.Graph(figure=fig, config=GRAPH_CONFIG,
+                     className="graph cliquable" if cliquable else "graph",
+                     **kwargs)
+
+
+# ---------------------------------------------------------------
+#  Composants
+# ---------------------------------------------------------------
+def kpi(label, valeur, sous_titre=None, couleur=None):
+    return html.Div(className="kpi", children=[
+        html.Div(label, className="kpi-label"),
+        html.Div(valeur, className="kpi-value", style={"color": couleur} if couleur else None),
+        html.Div(sous_titre, className="kpi-sub") if sous_titre else None,
+    ])
+
+
+def carte(titre, *enfants, sous_titre=None, classe=""):
+    return html.Div(className=f"card {classe}", children=[
+        html.Div(className="card-head", children=[
+            html.H3(titre),
+            html.Span(sous_titre, className="card-sub") if sous_titre else None,
+        ]),
+        *enfants,
+    ])
+
+
+def entete(titre, sous_titre, p):
+    return html.Div(className="page-head", children=[
+        html.Div([html.H1(titre), html.P(sous_titre)]),
+        html.Span(className="data-badge", children=[
+            html.Span(className="dot"), p["nom"]]),
+    ])
+
+
+def tableau(df, n=10):
+    df = df.head(n)
+    return html.Div(className="table-wrap", children=html.Table(className="table", children=[
+        html.Thead(html.Tr([html.Th(c) for c in df.columns])),
+        html.Tbody([html.Tr([html.Td(str(v)) for v in ligne])
+                    for ligne in df.itertuples(index=False)]),
+    ]))
+
+
+def note(texte, ton="info"):
+    return html.Div(texte, className=f"note note-{ton}")
+
+
+def carte_alerte(df, top, horizon=30):
+    """Alerte de la machine la plus a risque : message, chiffres cles, lien."""
+    libelle, couleur = NIVEAUX[top["niveau"]]
+    machine = top["machine"]
+    _, vals, pente = pred.prevoir_trs(df[df["machine"] == machine], n_jours=horizon)
+    sous_seuil = [i for i, v in enumerate(vals) if v < pred.SEUIL_PANNE_TRS]
+    if sous_seuil:
+        echeance = ["Son TRS devrait passer sous le seuil critique de 50 % dans ",
+                    html.B(f"~{sous_seuil[0] + 1} jours ouvrés"), "."]
+    else:
+        echeance = ["Son TRS est orienté à la baisse." if pente < 0
+                    else "Son TRS reste stable pour l'instant."]
+    stats = [
+        ("Risque de panne", pct(top["probabilite_panne"], 0), couleur),
+        ("Tendance", pct(pente, 2, signe=True).replace(" %", " pt/j"),
+         RED if pente < 0 else GREEN),
+        ("TRS à 15 jours", pct(vals[min(14, len(vals) - 1)]), None),
+    ]
+    return html.Div(className="alert", style={"--alert": couleur}, children=[
+        html.Div(className="alert-icon", children="!"),
+        html.Div(className="alert-body", children=[
+            html.Div(f"Alerte maintenance prédictive · risque {libelle.lower()}",
+                     className="alert-kicker"),
+            html.Div(className="alert-text", children=[
+                html.B(machine), " risque une défaillance. ", *echeance]),
+            html.Div("Action recommandée : planifier une maintenance préventive "
+                     "avant la panne.", className="alert-action"),
+        ]),
+        html.Div(className="alert-stats", children=[
+            html.Div(className="alert-stat", children=[
+                html.Span(label),
+                html.B(valeur, style={"color": c} if c else None),
+            ]) for label, valeur, c in stats
+        ]),
+        dcc.Link("Voir la prédiction →", href="/prediction", className="btn"),
+    ])
+
+
+# ---------------------------------------------------------------
+#  Pages
+# ---------------------------------------------------------------
+def page_vue_ensemble(cle):
+    p = preparer(cle)
+    df = p["clean"]
+    if df.empty:
+        return note("Aucune donnée exploitable après nettoyage.", "danger")
+    ml = modele_ml(cle)
+    trs = trs_global(df)
+    debut, fin = df["date"].min(), df["date"].max()
+    n_machines = df["machine"].nunique()
+
+    syn = synthese_par_machine(df)
+    pire = syn.iloc[0]
+    sous_objectif = int((syn["trs"] < SEUIL_EXCELLENCE).sum())
+
+    focus = None
+    alerte = None
+    n_eleve = "—"
+    if ml["ok"]:
+        risque = ml["risque"]
+        n_eleve = str(int((risque["niveau"] == "ELEVE").sum()))
+        top = risque.iloc[0]
+        if top["niveau"] != "FAIBLE":
+            focus = top["machine"]
+            alerte = carte_alerte(df, top)
+        else:
+            alerte = html.Div(className="alert", style={"--alert": GREEN}, children=[
+                html.Div(className="alert-icon", children="✓"),
+                html.Div(className="alert-body", children=[
+                    html.Div("Maintenance prédictive", className="alert-kicker"),
+                    html.Div("Aucune machine ne présente de risque de panne élevé.",
+                             className="alert-text"),
+                ]),
+            ])
+    elif ml["raison"]:
+        alerte = note("Modèle de risque indisponible : " + ml["raison"])
+
+    facteurs = [("Disponibilité", df["dispo"].mean()),
+                ("Performance", df["perf"].mean()),
+                ("Qualité", df["qual"].mean())]
+    def terme(nom, v, principal=False):
+        couleur = couleur_trs(v) if principal and v < SEUIL_EXCELLENCE else None
+        return html.Div(className="formula-term" + (" formula-main" if principal else ""), children=[
+            html.Span(nom, className="formula-label"),
+            html.Span(pct(v), className="formula-val", style={"color": couleur} if couleur else None),
+            html.Div(className="formula-bar", children=[
+                html.Div(className="formula-fill",
+                         style={"width": f"{v * 100:.1f}%", "background": couleur} if couleur
+                         else {"width": f"{v * 100:.1f}%"}),
+                html.Div(className="formula-target", title="Objectif 85 %") if principal else None,
+            ]),
+        ])
+
+    formule = [terme("TRS atelier", trs, principal=True),
+               html.Span("=", className="formula-op")]
+    for i, (nom, v) in enumerate(facteurs):
+        if i:
+            formule.append(html.Span("×", className="formula-op"))
+        formule.append(terme(nom, v))
+
+    etapes = [
+        ("1", "Ingestion", "CSV d'usine, schéma validé", "/ingestion"),
+        ("2", "Préparation", "Nettoyage et contrôles qualité", "/preparation"),
+        ("3", "Analyse TRS", "KPI, diagnostic, évolution", "/analyse"),
+        ("4", "Prédiction", "Random Forest et prévision", "/prediction"),
+    ]
+    return html.Div([
+        html.Div(className="hero", children=[
+            html.Div(className="hero-text", children=[
+                html.Div("Maintenance prédictive · Zone Franche du Togo",
+                         className="hero-kicker"),
+                html.H1("Anticiper les pannes avant qu'elles n'arrêtent la production"),
+                html.P(f"{n_machines} machines suivies du {debut:%d/%m/%Y} au "
+                       f"{fin:%d/%m/%Y} · Python, Scikit-learn, Plotly Dash"),
+            ]),
+            html.Div(className="hero-panel", children=[
+                html.Div(className="hero-panel-head", children=[
+                    html.Span("Taux de rendement synthétique", className="hero-panel-label"),
+                    html.Span("objectif 85 %", className="hero-target"),
+                ]),
+                html.Div(formule, className="formula"),
+            ]),
+        ]),
+        html.Div(className="grid grid-4", children=[
+            kpi("TRS global", pct(trs), f"{pct(trs - SEUIL_EXCELLENCE, 1, signe=True)} vs objectif 85 %",
+                couleur_trs(trs)),
+            kpi("Machine la plus faible", pire["machine"], f"TRS {pct(pire['trs'])}",
+                couleur_trs(pire["trs"])),
+            kpi("Sous l'objectif", f"{sous_objectif} / {n_machines}", "machines < 85 % de TRS"),
+            kpi("Risque de panne élevé", f"{n_eleve} / {n_machines}",
+                "machines · Random Forest", RED if n_eleve not in ("—", "0") else GREEN),
+        ]),
+        alerte,
+        html.Div(className="grid grid-2", children=[
+            carte("TRS moyen par machine", graphe(fig_trs_machines(df, focus))),
+            carte("Évolution hebdomadaire du TRS", graphe(fig_evolution(df, focus, 340)),
+                  sous_titre=f"{focus} mise en avant" if focus else None),
+        ]),
+        html.Div(className="pipeline", children=[
+            dcc.Link(href=href, className="step", children=[
+                html.Span(num, className="step-num"),
+                html.Div([html.B(titre), html.Span(desc)]),
+            ]) for num, titre, desc, href in etapes
+        ]),
+    ])
+
+
+def page_ingestion(cle):
+    p = preparer(cle)
+    return html.Div([
+        entete("Ingestion des données",
+               "Chargez le fichier de production d'une usine ou utilisez le jeu de "
+               "démonstration. Le schéma est vérifié automatiquement.", p),
+        html.Div(className="grid grid-2", children=[
+            carte("Import", dcc.Upload(
+                id="upload", accept=".csv", className="upload",
+                children=html.Div([
+                    html.Div("⤒", className="upload-icon"),
+                    html.Div([html.B("Déposez un fichier CSV"), " ou cliquez pour parcourir"]),
+                    html.Div("Séparateur virgule ou point-virgule", className="muted"),
+                ])),
+                html.Button("Utiliser le jeu de démonstration", id="btn-demo",
+                            className="btn btn-ghost", n_clicks=0),
+                html.Div(id="ing-msg"),
+            ),
+            carte("Format attendu",
+                  html.P("Colonnes obligatoires :", className="muted"),
+                  html.Div([html.Code(c, className="chip-code") for c in COLONNES_REQUISES],
+                           className="chip-row"),
+                  html.P("Colonnes utilisées par le modèle de risque :", className="muted"),
+                  html.Div([html.Code(c, className="chip-code") for c in COLONNES_PREDICTION],
+                           className="chip-row"),
+                  html.A("Télécharger le modèle CSV", className="btn btn-ghost",
+                         download="modele_production.csv",
+                         href="data:text/csv;charset=utf-8,"
+                              + ",".join(COLONNES_REQUISES + COLONNES_PREDICTION)),
+            ),
+        ]),
+        carte("Aperçu des données brutes", html.Div(id="ing-preview",
+                                                     children=apercu(p))),
+    ])
+
+
+def apercu(p):
+    return [tableau(p["brut"], 12),
+            html.Div(f"{nombre(p['n0'])} lignes chargées · source : {p['nom']}",
+                     className="muted small")]
+
+
+def page_preparation(cle):
+    p = preparer(cle)
+    rejets = p["n0"] - p["n1"]
+    controles = [
+        "Suppression des doublons exacts",
+        "Suppression des lignes aux valeurs essentielles manquantes",
+        "Cohérence : temps de marche ≤ temps prévu",
+        "Cohérence : pièces bonnes ≤ pièces produites",
+        "Valeurs strictement positives pour les dénominateurs",
+    ]
+    manq = p["manquantes"]
+    return html.Div([
+        entete("Préparation & qualité",
+               "Les données brutes sont nettoyées avant tout calcul de TRS.", p),
+        html.Div(className="grid grid-3", children=[
+            kpi("Lignes reçues", nombre(p["n0"])),
+            kpi("Lignes valides", nombre(p["n1"]), couleur=GREEN),
+            kpi("Lignes rejetées", nombre(rejets),
+                pct(rejets / p["n0"]) + " du total" if p["n0"] else None,
+                RED if rejets else None),
+        ]),
+        html.Div(className="grid grid-2", children=[
+            carte("Contrôles de qualité appliqués", html.Ul(className="checks", children=[
+                html.Li([html.Span("✓", className="check"), c]) for c in controles])),
+            carte("Valeurs manquantes",
+                  tableau(manq.rename("nb manquants").rename_axis("colonne").reset_index())
+                  if len(manq) else
+                  note("Aucune valeur manquante sur les colonnes essentielles.", "ok")),
+        ]),
+    ])
+
+
+def page_analyse(cle):
+    p = preparer(cle)
+    df = p["clean"]
+    if df.empty:
+        return note("Aucune donnée exploitable après nettoyage.", "danger")
+    machines = sorted(df["machine"].unique())
+    dmin, dmax = df["date"].min().date(), df["date"].max().date()
+    return html.Div([
+        entete("Analyse du TRS",
+               "Cliquez sur une machine (barre ou courbe) pour la mettre en avant "
+               "dans tous les graphiques.", p),
+        html.Div(className="filters card", children=[
+            html.Div([html.Label("Machines"),
+                      dcc.Checklist(id="f-machines", options=machines, value=machines,
+                                    inline=True, className="chips")]),
+            html.Div([html.Label("Période"),
+                      dcc.DatePickerRange(id="f-dates", min_date_allowed=dmin,
+                                          max_date_allowed=dmax, start_date=dmin,
+                                          end_date=dmax, display_format="DD/MM/YYYY",
+                                          first_day_of_week=1)]),
+        ]),
+        dcc.Store(id="focus", data=None),
+        html.Div(id="a-kpis", className="grid grid-4"),
+        html.Div(className="grid grid-12", children=[
+            carte("TRS moyen par machine", graphe(go.Figure(), "g-machines", True)),
+            carte("Décomposition", html.Div(id="a-decomp-titre", className="muted"),
+                  graphe(go.Figure(), "g-decomp"), html.Div(id="a-decomp-trs")),
+        ]),
+        html.Div(id="a-diag"),
+        carte("Évolution hebdomadaire du TRS", graphe(go.Figure(), "g-evol", True)),
+    ])
+
+
+def page_prediction(cle):
+    p = preparer(cle)
+    df = p["clean"]
+    if df.empty:
+        return note("Aucune donnée exploitable après nettoyage.", "danger")
+    ml = modele_ml(cle)
+    machines = sorted(df["machine"].unique())
+    defaut = ml["risque"].iloc[0]["machine"] if ml["ok"] else machines[0]
+
+    if ml["ok"]:
+        bloc_risque = carte(
+            "Risque de panne par machine",
+            graphe(fig_risque(ml["risque"], defaut), "g-risque", True),
+            html.Div("Cliquez sur une machine pour afficher sa prévision. "
+                     "Seuils : modéré ≥ 30 %, élevé ≥ 60 %.", className="muted small"),
+            sous_titre="Probabilité d'une défaillance (TRS < 50 %) "
+                       f"dans les {pred.HORIZON} prochains jours",
+        )
+        metriques = [
+            kpi("Exactitude", pct(ml["accuracy"], 0)),
+            kpi("Précision", pct(ml["precision"], 0)),
+            kpi("Rappel", pct(ml["recall"], 0)),
+            kpi("Score F1", pct(ml["f1"], 0)),
+        ]
+        bloc_eval = html.Div([
+            html.H2("Évaluation du modèle", className="section-title"),
+            html.Div(f"{ml['source']} · {nombre(ml['n_echantillons'])} échantillons dont "
+                     f"{ml['n_pannes']} situations de panne · entraînement {ml['n_train']} "
+                     f"/ test {ml['n_test']}", className="muted small"),
+            html.Div(className="grid grid-4", children=metriques),
+            note("Les pannes sont rares dans l'historique (classes déséquilibrées), ce qui "
+                 "limite le rappel. Pistes : plus d'historique, rééquilibrage (SMOTE), "
+                 "ajustement du seuil de décision.") if ml["recall"] < 0.6 else None,
+            html.Div(className="grid grid-2", children=[
+                carte("Importance des variables",
+                      graphe(fig_importances(ml["importances"]))
+                      if ml["importances"] is not None else
+                      html.Div("Non disponible pour ce modèle.", className="muted")),
+                carte("Matrice de confusion", graphe(fig_confusion(ml["confusion"])),
+                      sous_titre="Jeu de test"),
+            ]),
+        ])
+    else:
+        bloc_risque = note("Modèle de risque indisponible : " + ml["raison"], "warn")
+        bloc_eval = None
+
+    return html.Div([
+        entete("Prédiction",
+               "Random Forest pour le risque de panne, régression linéaire pour "
+               "la tendance du TRS.", p),
+        bloc_risque,
+        html.Div(className="card", children=[
+            html.Div(className="card-head card-head-controls", children=[
+                html.H3("Prévision du TRS"),
+                html.Div(className="controls", children=[
+                    dcc.Dropdown(id="p-machine", options=machines, value=defaut,
+                                 clearable=False, searchable=False, className="dd"),
+                    html.Div(className="slider-wrap", children=[
+                        html.Label("Horizon (jours ouvrés)"),
+                        dcc.Slider(id="p-horizon", min=5, max=30, step=5, value=15,
+                                   marks={i: str(i) for i in range(5, 31, 5)}),
+                    ]),
+                ]),
+            ]),
+            html.Div(className="grid grid-forecast", children=[
+                graphe(go.Figure(), "g-prev"),
+                html.Div(id="p-tendance", className="trend"),
+            ]),
+        ]),
+        bloc_eval,
+    ])
+
+
+PAGES = {
+    "/": ("Vue d'ensemble", "◎", page_vue_ensemble),
+    "/ingestion": ("Ingestion", "1", page_ingestion),
+    "/preparation": ("Préparation", "2", page_preparation),
+    "/analyse": ("Analyse TRS", "3", page_analyse),
+    "/prediction": ("Prédiction", "4", page_prediction),
+}
+
+# ---------------------------------------------------------------
+#  Application
+# ---------------------------------------------------------------
+app = Dash(
+    __name__,
+    title="TRS & Maintenance prédictive",
+    suppress_callback_exceptions=True,
+    external_stylesheets=[
+        "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    ],
+)
+server = app.server   # point d'entree WSGI pour le deploiement (gunicorn app:server)
+
+app.layout = html.Div(className="shell", children=[
+    dcc.Location(id="url"),
+    dcc.Store(id="data-key", data="demo"),
+    html.Aside(className="sidebar", children=[
+        html.Div(className="brand", children=[
+            html.Div("TRS", className="brand-logo"),
+            html.Div([html.B("TRS & Maintenance"), html.Span("prédictive")]),
+        ]),
+        html.Div("Tableau de bord", className="nav-section"),
+        html.Nav(className="nav", children=[
+            dcc.Link(id={"type": "nav", "index": href}, href=href, className="nav-link",
+                     children=[html.Span(icone, className="nav-icon"), titre])
+            for href, (titre, icone, _) in PAGES.items()
+        ]),
+        html.Div(className="sidebar-foot", children=[
+            html.B("Données simulées"),
+            html.Span("Jeu réaliste généré pour la démonstration"),
+            html.Span("UCAO-UUT · Master Big Data"),
+        ]),
+    ]),
+    html.Main(id="page", className="main"),
 ])
 
-# ===============================================================
-#  ONGLET 1 — INGESTION
-# ===============================================================
-with onglet1:
-    st.markdown(
-        '<div class="step-badge"><span class="step-num">1</span> Ingestion des donnees</div>',
-        unsafe_allow_html=True)
-    st.markdown(
-        "<span style='color:#7F8C8D;font-size:0.9rem'>"
-        "Chargez le fichier de production d'une usine, ou utilisez le "
-        "jeu de demonstration. Le schema est verifie automatiquement.</span>",
-        unsafe_allow_html=True)
 
-    st.write("")
-    col_a, col_b = st.columns([1, 1], gap="large")
-    with col_a:
-        st.markdown('<div class="section-title"><span class="icon">&#x25B2;</span> Import</div>',
-                    unsafe_allow_html=True)
-        fichier = st.file_uploader("Deposer un fichier CSV de production",
-                                   type=["csv"], label_visibility="collapsed")
-        if fichier is not None:
-            try:
-                df_up = pd.read_csv(fichier)
-                manquantes = [c for c in COLONNES_REQUISES if c not in df_up.columns]
-                if manquantes:
-                    st.error("Colonnes manquantes : " + ", ".join(manquantes))
-                    st.info("Colonnes attendues : " + ", ".join(COLONNES_REQUISES))
-                else:
-                    st.session_state.df_brut = df_up
-                    st.success(f"Fichier charge — {len(df_up)} lignes importees.")
-            except Exception as e:
-                st.error(f"Lecture impossible : {e}")
+@app.callback(Output("page", "children"),
+              Input("url", "pathname"), State("data-key", "data"))
+def afficher_page(chemin, cle):
+    _, _, construire = PAGES.get(chemin, PAGES["/"])
+    return construire(cle)
 
-        if st.button("Utiliser le jeu de demonstration", type="secondary",
-                      use_container_width=True):
-            st.session_state.df_brut = donnees_par_defaut()
-            st.success("Jeu de demonstration charge.")
 
-    with col_b:
-        st.markdown('<div class="section-title"><span class="icon">&#x25A0;</span> Format attendu</div>',
-                    unsafe_allow_html=True)
-        st.code(", ".join(COLONNES_REQUISES), language="text")
-        modele = pd.DataFrame(columns=COLONNES_REQUISES)
-        st.download_button(
-            "Telecharger le modele CSV",
-            modele.to_csv(index=False).encode("utf-8"),
-            file_name="modele_production.csv", mime="text/csv",
-            use_container_width=True)
+@app.callback(Output({"type": "nav", "index": ALL}, "className"),
+              Input("url", "pathname"))
+def nav_active(chemin):
+    chemin = chemin if chemin in PAGES else "/"
+    return ["nav-link active" if href == chemin else "nav-link" for href in PAGES]
 
-    st.write("")
-    st.markdown('<div class="section-title">Apercu des donnees brutes</div>',
-                unsafe_allow_html=True)
-    st.dataframe(st.session_state.df_brut.head(12),
-                 use_container_width=True, hide_index=True)
-    st.caption(f"{len(st.session_state.df_brut)} lignes chargees")
 
-# ===============================================================
-#  ONGLET 2 — PREPARATION
-# ===============================================================
-with onglet2:
-    st.markdown(
-        '<div class="step-badge"><span class="step-num">2</span> Preparation & qualite</div>',
-        unsafe_allow_html=True)
+# ---- Ingestion ----
+def lire_csv(contenu):
+    _, b64 = contenu.split(",", 1)
+    brut = base64.b64decode(b64)
+    for encodage in ("utf-8-sig", "latin-1"):
+        try:
+            texte = brut.decode(encodage)
+            break
+        except UnicodeDecodeError:
+            continue
+    # sep=None : detection automatique virgule / point-virgule (export Excel FR)
+    return pd.read_csv(io.StringIO(texte), sep=None, engine="python")
 
-    df_brut = st.session_state.df_brut.copy()
-    manquantes = [c for c in COLONNES_REQUISES if c not in df_brut.columns]
+
+@app.callback(Output("data-key", "data"), Output("ing-msg", "children"),
+              Output("ing-preview", "children"),
+              Input("upload", "contents"), Input("btn-demo", "n_clicks"),
+              State("upload", "filename"), prevent_initial_call=True)
+def charger(contenu, _clic, nom_fichier):
+    if ctx.triggered_id == "btn-demo":
+        return "demo", note("Jeu de démonstration chargé.", "ok"), apercu(preparer("demo"))
+    if contenu is None:
+        return no_update, no_update, no_update
+    try:
+        df = lire_csv(contenu)
+    except Exception as e:
+        return no_update, note(f"Lecture impossible : {e}", "danger"), no_update
+    manquantes = [c for c in COLONNES_REQUISES if c not in df.columns]
     if manquantes:
-        st.error("Donnees inexploitables : colonnes manquantes — "
-                 + ", ".join(manquantes))
-        st.stop()
+        return no_update, note("Colonnes manquantes : " + ", ".join(manquantes), "danger"), no_update
+    cle = uuid.uuid4().hex
+    _DONNEES[cle] = (df, nom_fichier or "Fichier importé")
+    p = preparer(cle)
+    msg = f"{nom_fichier} chargé : {nombre(len(df))} lignes importées."
+    absentes = [c for c in COLONNES_PREDICTION if c not in df.columns]
+    if absentes:
+        msg += " Modèle de risque indisponible (colonnes " + ", ".join(absentes) + " absentes)."
+    return cle, note(msg, "ok"), apercu(p)
 
-    n0 = len(df_brut)
-    df_brut["date"] = pd.to_datetime(df_brut["date"], errors="coerce")
-    df_clean = nettoyer(df_brut)
-    n1 = len(df_clean)
-    rejets = n0 - n1
 
-    st.write("")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Lignes recues", f"{n0:,}".replace(",", " "))
-    c2.metric("Lignes valides", f"{n1:,}".replace(",", " "))
-    c3.metric("Lignes rejetees", f"{rejets:,}".replace(",", " "),
-              delta=f"-{(rejets / n0 * 100):.1f} %" if n0 else "0 %",
-              delta_color="inverse")
+# ---- Analyse : graphiques lies ----
+@app.callback(Output("focus", "data"),
+              Input("g-machines", "clickData"), Input("g-evol", "clickData"),
+              State("focus", "data"), prevent_initial_call=True)
+def choisir_focus(clic_barre, clic_courbe, focus):
+    clic = clic_barre if ctx.triggered_id == "g-machines" else clic_courbe
+    if not clic:
+        return no_update
+    machine = clic["points"][0].get("customdata")
+    if isinstance(machine, list):
+        machine = machine[0]
+    # un second clic sur la meme machine retire la mise en avant
+    return None if machine == focus else machine
 
-    st.write("")
-    st.markdown('<div class="section-title">Controles de qualite appliques</div>',
-                unsafe_allow_html=True)
-    st.markdown("""
-<div class="content-card">
-<ul class="check-list">
-    <li><span class="check-icon">&#10003;</span> Suppression des doublons exacts</li>
-    <li><span class="check-icon">&#10003;</span> Suppression des lignes aux valeurs essentielles manquantes</li>
-    <li><span class="check-icon">&#10003;</span> Coherence : temps de marche &le; temps prevu</li>
-    <li><span class="check-icon">&#10003;</span> Coherence : pieces bonnes &le; pieces produites</li>
-    <li><span class="check-icon">&#10003;</span> Valeurs strictement positives pour les denominateurs</li>
-</ul>
-</div>
-""", unsafe_allow_html=True)
 
-    manq = df_brut[COLONNES_REQUISES].isna().sum()
-    manq = manq[manq > 0]
-    if len(manq):
-        st.markdown('<div class="section-title">Valeurs manquantes detectees</div>',
-                    unsafe_allow_html=True)
-        st.dataframe(manq.rename("nb manquants").to_frame(),
-                     use_container_width=True)
-    else:
-        st.success("Aucune valeur manquante sur les colonnes essentielles.")
-
-    st.session_state.df_clean = calculer_trs(df_clean)
-    st.caption("Les donnees nettoyees alimentent les onglets Analyse et Prediction.")
-
-# ===============================================================
-#  ONGLET 3 — ANALYSE TRS
-# ===============================================================
-with onglet3:
-    st.markdown(
-        '<div class="step-badge"><span class="step-num">3</span> Analyse du TRS</div>',
-        unsafe_allow_html=True)
-
-    if "df_clean" not in st.session_state:
-        st.info("Passez d'abord par l'onglet Preparation.")
-        st.stop()
-    df = st.session_state.df_clean
-
-    st.write("")
-    fcol1, fcol2 = st.columns([1, 1.4], gap="large")
-    with fcol1:
-        machines = sorted(df["machine"].unique())
-        sel = st.multiselect("Machines", machines, default=machines)
-    with fcol2:
-        dmin, dmax = df["date"].min().date(), df["date"].max().date()
-        per = st.slider("Periode", min_value=dmin, max_value=dmax,
-                        value=(dmin, dmax), format="DD/MM/YYYY")
-
-    if not sel:
-        st.warning("Selectionnez au moins une machine.")
-        st.stop()
-    dff = df[df["machine"].isin(sel)
-             & (df["date"].dt.date >= per[0])
-             & (df["date"].dt.date <= per[1])]
+@app.callback(Output("a-kpis", "children"), Output("g-machines", "figure"),
+              Output("a-decomp-titre", "children"), Output("g-decomp", "figure"),
+              Output("a-decomp-trs", "children"), Output("a-diag", "children"),
+              Output("g-evol", "figure"),
+              Input("f-machines", "value"), Input("f-dates", "start_date"),
+              Input("f-dates", "end_date"), Input("focus", "data"),
+              State("data-key", "data"))
+def maj_analyse(sel, debut, fin, focus, cle):
+    df = preparer(cle)["clean"]
+    vide = style_fig(go.Figure(), 120, legende=False)
+    dff = df[df["machine"].isin(sel or [])]
+    if debut:
+        dff = dff[dff["date"] >= pd.to_datetime(debut)]
+    if fin:
+        dff = dff[dff["date"] <= pd.to_datetime(fin)]
     if dff.empty:
-        st.warning("Aucune donnee pour cette selection.")
-        st.stop()
+        msg = note("Aucune donnée pour cette sélection.", "warn")
+        return msg, vide, "", vide, "", None, vide
 
-    st.write("")
-    trs_val = trs_global(dff)
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("TRS global", f"{trs_val:.1%}",
-              delta=f"{(trs_val - SEUIL_EXCELLENCE):.1%} vs objectif")
-    k2.metric("Disponibilite", f"{dff['dispo'].mean():.1%}")
-    k3.metric("Performance", f"{dff['perf'].mean():.1%}")
-    k4.metric("Qualite", f"{dff['qual'].mean():.1%}")
+    if focus not in dff["machine"].unique():
+        focus = None
+    trs = trs_global(dff)
+    kpis = [
+        kpi("TRS global", pct(trs),
+            f"{pct(trs - SEUIL_EXCELLENCE, 1, signe=True)} vs objectif 85 %", couleur_trs(trs)),
+        kpi("Disponibilité", pct(dff["dispo"].mean())),
+        kpi("Performance", pct(dff["perf"].mean())),
+        kpi("Qualité", pct(dff["qual"].mean())),
+    ]
 
-    st.write("")
-    g, d = st.columns([1.1, 1], gap="medium")
-    with g:
-        st.markdown('<div class="section-title">TRS moyen par machine</div>',
-                    unsafe_allow_html=True)
-        syn = synthese_par_machine(dff)
-        syn["pct"] = syn["trs"] * 100
-        fig = px.bar(syn, x="machine", y="pct",
-                     text=syn["pct"].map(lambda v: f"{v:.1f} %"))
-        fig.update_traces(
-            marker_color=[couleur_trs(v) for v in syn["trs"]],
-            textposition="outside",
-            marker_line_width=0,
-        )
-        fig.add_hline(y=85, line_dash="dash", line_color=SLATE,
-                      annotation_text="Objectif 85 %",
-                      annotation_font_color=SLATE)
-        fig.update_layout(yaxis_title="TRS (%)", xaxis_title="",
-                          yaxis_range=[0, 105], showlegend=False)
-        chart_layout(fig, 380)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with d:
-        st.markdown('<div class="section-title">Decomposition</div>',
-                    unsafe_allow_html=True)
-        mf = st.selectbox("Machine", syn["machine"].tolist(), index=0,
-                          label_visibility="collapsed")
-        r = syn[syn["machine"] == mf].iloc[0]
-        fac = pd.DataFrame({
-            "Composante": ["Disponibilite", "Performance", "Qualite"],
-            "Valeur": [r["dispo"], r["perf"], r["qual"]],
-        })
-        figf = px.bar(fac, x="Valeur", y="Composante", orientation="h",
-                      text=fac["Valeur"].map(lambda v: f"{v:.0%}"),
-                      color="Composante",
-                      color_discrete_sequence=[SLATE, NAVY, ACCENT])
-        figf.update_traces(textposition="outside", marker_line_width=0)
-        figf.update_layout(xaxis_range=[0, 1.08], showlegend=False,
-                           xaxis_title="", yaxis_title="")
-        chart_layout(figf, 300)
-        st.plotly_chart(figf, use_container_width=True)
-        trs_color = couleur_trs(r["trs"])
-        st.markdown(
-            f"<div style='text-align:center;font-size:0.92rem;color:{MUTED}'>"
-            f"TRS de <b style='color:{NAVY}'>{mf}</b> : "
-            f"<b style='color:{trs_color};font-size:1.1rem'>{r['trs']:.1%}</b></div>",
-            unsafe_allow_html=True)
-
-    st.write("")
     syn = synthese_par_machine(dff)
     pire = syn.iloc[0]
-    comp = {"la disponibilite": pire["dispo"], "la performance": pire["perf"],
-            "la qualite": pire["qual"]}
+    cible = syn[syn["machine"] == focus].iloc[0] if focus else pire
+    titre = (f"Machine sélectionnée : {cible['machine']}" if focus
+             else f"Machine la plus faible : {cible['machine']} (cliquez une autre barre)")
+    trs_txt = html.Div(className="center", children=[
+        "TRS de ", html.B(cible["machine"]), " : ",
+        html.B(pct(cible["trs"]), style={"color": couleur_trs(cible["trs"]),
+                                         "fontSize": "1.15rem"})])
+
+    comp = {"la disponibilité": pire["dispo"], "la performance": pire["perf"],
+            "la qualité": pire["qual"]}
     cause = min(comp, key=comp.get)
-    st.markdown(
-        f"""<div class="diagnostic-card">
-            <div class="title">Diagnostic automatique</div>
-            <div class="body">
-                Machine la plus faible : <b>{pire['machine']}</b>
-                (TRS <b>{pire['trs']:.1%}</b>).
-                Composante penalisante : <b>{cause}</b> ({comp[cause]:.2f}).
-                <br>Action prioritaire : agir sur {cause} de {pire['machine']}.
-            </div>
-        </div>""",
-        unsafe_allow_html=True)
+    diag = html.Div(className="diag", children=[
+        html.Div("Diagnostic automatique", className="diag-title"),
+        html.Div([
+            "Machine la plus faible : ", html.B(pire["machine"]),
+            f" (TRS {pct(pire['trs'])}). Composante pénalisante : ",
+            html.B(cause), f" ({pct(comp[cause])}). ",
+            html.Br(), f"Action prioritaire : agir sur {cause} de {pire['machine']}.",
+        ]),
+    ])
+    return (kpis, fig_trs_machines(dff, focus, 360), titre,
+            fig_decomposition(cible), trs_txt, diag, fig_evolution(dff, focus))
 
-    st.write("")
-    st.markdown('<div class="section-title">Evolution du TRS dans le temps</div>',
-                unsafe_allow_html=True)
-    evol = (dff.groupby([pd.Grouper(key="date", freq="W"), "machine"])["trs"]
-              .mean().reset_index())
-    evol["pct"] = evol["trs"] * 100
-    figl = px.line(evol, x="date", y="pct", color="machine", markers=True)
-    figl.add_hline(y=85, line_dash="dash", line_color=SLATE,
-                   annotation_text="Objectif 85 %",
-                   annotation_font_color=SLATE)
-    figl.update_layout(yaxis_title="TRS (%)", xaxis_title="",
-                       yaxis_range=[0, 105])
-    figl.update_traces(line_width=2.5, marker_size=5)
-    chart_layout(figl, 380)
-    st.plotly_chart(figl, use_container_width=True)
 
-# ===============================================================
-#  ONGLET 4 — PREDICTION (ML)
-# ===============================================================
-with onglet4:
-    st.markdown(
-        '<div class="step-badge"><span class="step-num">4</span> Prediction (Machine Learning)</div>',
-        unsafe_allow_html=True)
+# ---- Prediction ----
+@app.callback(Output("p-machine", "value"),
+              Input("g-risque", "clickData"), prevent_initial_call=True)
+def risque_vers_prevision(clic):
+    if not clic:
+        return no_update
+    return clic["points"][0]["customdata"]
 
-    if "df_clean" not in st.session_state:
-        st.info("Passez d'abord par l'onglet Preparation.")
-        st.stop()
-    df = st.session_state.df_clean
 
-    st.write("")
-    st.markdown('<div class="section-title">A. Prevision du TRS</div>',
-                unsafe_allow_html=True)
+@app.callback(Output("g-risque", "figure"),
+              Input("p-machine", "value"), State("data-key", "data"),
+              prevent_initial_call=True)
+def surligner_risque(machine, cle):
+    return fig_risque(modele_ml(cle)["risque"], machine)
 
-    p1, p2 = st.columns([1, 1], gap="large")
-    with p1:
-        msel = st.selectbox("Machine a analyser", sorted(df["machine"].unique()))
-    with p2:
-        n_jours = st.slider("Horizon de prevision (jours ouvres)", 5, 30, 15)
 
-    dfm = df[df["machine"] == msel]
-    dts, vals, pente = pred.prevoir_trs(dfm, n_jours=n_jours)
-
-    hist = dfm.sort_values("date")
-    figp = go.Figure()
-    figp.add_trace(go.Scatter(
-        x=hist["date"], y=hist["trs"] * 100,
-        mode="lines", name="Historique",
-        line=dict(color=NAVY, width=2.5)))
-    figp.add_trace(go.Scatter(
-        x=dts, y=vals * 100, mode="lines+markers",
-        name="Prevision",
-        line=dict(color=ACCENT, dash="dash", width=2.5),
-        marker=dict(size=6)))
-    figp.add_hline(y=85, line_dash="dot", line_color=GREEN,
-                   annotation_text="Objectif 85 %", annotation_font_color=GREEN)
-    figp.add_hline(y=50, line_dash="dot", line_color=RED,
-                   annotation_text="Seuil critique 50 %", annotation_font_color=RED)
-    figp.update_layout(yaxis_title="TRS (%)", xaxis_title="",
-                       yaxis_range=[0, 105])
-    chart_layout(figp, 400)
-    st.plotly_chart(figp, use_container_width=True)
-
-    tendance = "baissiere" if pente < 0 else "stable ou haussiere"
-    t_color = RED if pente < 0 else GREEN
-    st.markdown(
-        f"<div class='content-card' style='text-align:center'>"
-        f"<span style='color:{MUTED};font-size:0.82rem;text-transform:uppercase;"
-        f"letter-spacing:0.5px;font-weight:500'>Tendance</span><br>"
-        f"<span style='color:{t_color};font-size:1.3rem;font-weight:700'>"
-        f"{tendance.capitalize()}</span>"
-        f"<span style='color:{MUTED};font-size:0.88rem'> "
-        f"({pente * 100:+.2f} pt/jour)</span><br>"
-        f"<span style='font-size:0.9rem;color:{TEXT}'>TRS projete dans {n_jours} jours : "
-        f"<b style='color:{NAVY}'>{vals[-1]:.1%}</b></span>"
-        f"</div>",
-        unsafe_allow_html=True)
-
-    st.write("")
-    st.markdown(
-        '<div class="section-title">B. Risque de panne (Random Forest)</div>',
-        unsafe_allow_html=True)
-    st.caption("Construction de features — separation train/test "
-               "— entrainement — evaluation — interpretation")
-
-    feats = pred.construire_features(df)
-    n_pannes = int(feats["panne_future"].sum())
-    st.markdown(
-        f"<div class='content-card'>"
-        f"<b>{len(feats)}</b> echantillons construits dont "
-        f"<b>{n_pannes}</b> situations de panne dans l'historique."
-        f"</div>",
-        unsafe_allow_html=True)
-
-    modele_charge = None
-    source_modele = ""
-    if os.path.exists("modele_risque.joblib"):
-        try:
-            artefact = joblib.load("modele_risque.joblib")
-            modele_charge = artefact["modele"]
-            source_modele = "Modele charge depuis le notebook (modele_risque.joblib)."
-        except Exception:
-            modele_charge = None
-
-    if modele_charge is not None:
-        st.success(source_modele)
-        res = pred.evaluer_modele_charge(feats, modele_charge)
+@app.callback(Output("g-prev", "figure"), Output("p-tendance", "children"),
+              Input("p-machine", "value"), Input("p-horizon", "value"),
+              State("data-key", "data"))
+def maj_prevision(machine, n_jours, cle):
+    df = preparer(cle)["clean"]
+    dfm = df[df["machine"] == machine]
+    dates, vals, pente = pred.prevoir_trs(dfm, n_jours=n_jours)
+    baisse = pente < 0
+    sous_seuil = [i for i, v in enumerate(vals) if v < pred.SEUIL_PANNE_TRS]
+    if sous_seuil:
+        alerte = html.Div(className="trend-alert", children=[
+            "Seuil critique atteint dans ", html.B(f"~{sous_seuil[0] + 1} jours ouvrés")])
+    elif baisse:
+        alerte = html.Div("Seuil critique non atteint sur l'horizon", className="muted small")
     else:
-        st.info("Modele entraine a la volee (notebook non execute).")
-        res = pred.entrainer_modele_risque(feats)
+        alerte = None
 
-    if not res["ok"]:
-        st.warning("Modele non entraine : " + res["raison"])
-    else:
-        st.write("")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Exactitude", f"{res['accuracy']:.0%}")
-        m2.metric("Precision", f"{res['precision']:.0%}")
-        m3.metric("Rappel", f"{res['recall']:.0%}")
-        m4.metric("Score F1", f"{res['f1']:.0%}")
-        st.caption(f"Entrainement sur {res['n_train']} echantillons, "
-                   f"test sur {res['n_test']}.")
+    dernier = dfm.sort_values("date")["trs"].tail(5).mean()
+    tendance = [
+        html.Div(machine, className="trend-machine"),
+        html.Div("Tendance", className="kpi-label"),
+        html.Div("Baissière" if baisse else "Stable ou haussière",
+                 className="trend-value", style={"color": RED if baisse else GREEN}),
+        html.Div(f"{pct(pente, 2, signe=True).replace(' %', ' pt')} / jour", className="muted"),
+        html.Hr(),
+        html.Div("TRS récent (5 j)", className="kpi-label"),
+        html.Div(pct(dernier), className="trend-num"),
+        html.Div(f"TRS projeté à {n_jours} jours", className="kpi-label"),
+        html.Div(pct(vals[-1]), className="trend-num", style={"color": couleur_trs(vals[-1])}),
+        alerte,
+    ]
+    return fig_prevision(dfm, dates, vals), tendance
 
-        if res["recall"] < 0.6:
-            st.info("Les pannes sont rares dans l'historique "
-                    "(classes desequilibrees), ce qui limite le rappel. Pistes "
-                    "d'amelioration : plus d'historique, reequilibrage "
-                    "(SMOTE), ou ajustement du seuil de decision.")
 
-        st.write("")
-        cg, cd = st.columns(2, gap="medium")
-        with cg:
-            st.markdown('<div class="section-title">Importance des variables</div>',
-                        unsafe_allow_html=True)
-            imp = res["importances"]
-            if imp is not None:
-                figi = px.bar(imp, x="importance", y="feature", orientation="h")
-                figi.update_traces(marker_color=NAVY, marker_line_width=0)
-                figi.update_layout(xaxis_title="", yaxis_title="",
-                                   yaxis=dict(autorange="reversed"))
-                chart_layout(figi, 320)
-                st.plotly_chart(figi, use_container_width=True)
-            else:
-                st.caption("Non disponible pour ce modele.")
-        with cd:
-            st.markdown('<div class="section-title">Matrice de confusion</div>',
-                        unsafe_allow_html=True)
-            cm = res["confusion"]
-            figc = px.imshow(cm, text_auto=True,
-                             color_continuous_scale=["#F0F2F6", NAVY],
-                             labels=dict(x="Predit", y="Reel", color="Nb"),
-                             x=["Sain", "Panne"], y=["Sain", "Panne"])
-            figc.update_layout(coloraxis_showscale=False)
-            chart_layout(figc, 320)
-            st.plotly_chart(figc, use_container_width=True)
-
-        st.write("")
-        st.markdown('<div class="section-title">Risque actuel par machine</div>',
-                    unsafe_allow_html=True)
-        risque = pred.risque_actuel_par_machine(df, feats, res["modele"])
-        badge_styles = {
-            "ELEVE":  f"background:{RED}11;color:{RED};border:1px solid {RED}33",
-            "MODERE": f"background:{AMBER}11;color:{AMBER};border:1px solid {AMBER}33",
-            "FAIBLE": f"background:{GREEN}11;color:{GREEN};border:1px solid {GREEN}33",
-        }
-        for _, r in risque.iterrows():
-            style = badge_styles.get(r["niveau"], "")
-            st.markdown(
-                f"""<div class="risk-card">
-                    <span class="risk-machine">{r['machine']}</span>
-                    <span class="risk-badge" style="{style}">
-                        {r['probabilite_panne']:.0%} — {r['niveau']}
-                    </span>
-                </div>""",
-                unsafe_allow_html=True)
-
-        st.caption("Les machines a risque ELEVE doivent faire l'objet d'une "
-                   "maintenance preventive prioritaire.")
-
-# ---------------------------------------------------------------
-#  Footer
-# ---------------------------------------------------------------
-st.markdown("""
-<div class="app-footer">
-    TRS & Maintenance Predictive &mdash; UCAO-UUT &middot; Master Big Data
-    &middot; Donnees simulees de facon realiste
-</div>
-""", unsafe_allow_html=True)
+if __name__ == "__main__":
+    modele_ml("demo")   # calcule le modele avant la premiere visite
+    app.run(debug=False, port=8050)
