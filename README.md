@@ -8,6 +8,11 @@ prédictive** (prévision du TRS et risque de panne par machine).
 TRS = Disponibilité × Performance × Qualité
 ```
 
+![Vue d'ensemble du tableau de bord](docs/images/vue_ensemble.png)
+
+📄 **[Rapport technique (PDF)](docs/rapport/rapport.pdf)** : données, construction des
+variables, entraînement et évaluation des modèles, limites.
+
 > **À propos des données** — les données de production industrielles sont
 > confidentielles. Le projet est livré avec un **jeu de données simulé de façon
 > réaliste** (5 machines, ~4 mois), généré par `generer_donnees.py`, avec un
@@ -28,6 +33,10 @@ Tableau de bord interactif **Plotly Dash** en 5 pages :
 | **Prédiction** | Risque de panne par machine (Random Forest), prévision du TRS (régression), métriques, importance des variables, matrice de confusion. |
 
 Chaque graphique s'exporte en PNG haute définition (icône appareil photo).
+
+| Analyse TRS | Prédiction |
+|---|---|
+| ![Analyse TRS](docs/images/analyse_trs.png) | ![Prédiction](docs/images/prediction.png) |
 
 ## Prérequis
 
@@ -82,6 +91,13 @@ trs-zone-franche-tg/
 ├── prediction.py                       # Modèles ML (prévision TRS + risque de panne)
 ├── generer_donnees.py                  # Génération de données simulées réalistes
 ├── maintenance_predictive_TRS.ipynb    # Notebook d'analyse Data Science
+├── docs/
+│   ├── images/                         # Captures du tableau de bord (README)
+│   └── rapport/
+│       ├── rapport.pdf                 # Rapport technique
+│       ├── rapport.tex                 # Source LaTeX (xelatex, 2 passes)
+│       ├── generer_figures.py          # Régénère les figures du rapport
+│       └── figures/
 ├── requirements.txt                    # Dépendances Python
 └── README.md
 ```

@@ -162,6 +162,11 @@ def nombre(n):
     return f"{n:,}".replace(",", " ")
 
 
+def ecart_objectif(v):
+    return (f"{(v - SEUIL_EXCELLENCE) * 100:+.1f}".replace(".", ",")
+            + " pts vs objectif 85 %")
+
+
 def couleur_trs(v):
     if v >= SEUIL_EXCELLENCE:
         return GREEN
@@ -190,6 +195,7 @@ def style_fig(fig, height=340, legende=True):
         legend=dict(orientation="h", yanchor="bottom", y=1.02,
                     xanchor="right", x=1, font=dict(size=11), title=None),
         hoverlabel=dict(font_family="Inter, sans-serif", bgcolor="white"),
+        separators=", ",
     )
     fig.update_xaxes(gridcolor=GRID, zeroline=False, linecolor=GRID)
     fig.update_yaxes(gridcolor=GRID, zeroline=False, linecolor=GRID)
@@ -215,7 +221,9 @@ def fig_trs_machines(df, focus=None, height=340):
     ))
     ligne_objectif(fig)
     fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 108], bargap=0.35)
-    return style_fig(fig, height, legende=False)
+    style_fig(fig, height, legende=False)
+    fig.update_xaxes(showgrid=False)
+    return fig
 
 
 def fig_evolution(df, focus=None, height=360):
@@ -238,7 +246,7 @@ def fig_evolution(df, focus=None, height=360):
         ))
     ligne_objectif(fig)
     fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 105],
-                      hovermode="closest")
+                      xaxis_tickformat="%d/%m", hovermode="closest")
     return style_fig(fig, height)
 
 
@@ -276,7 +284,8 @@ def fig_prevision(dfm, dates, vals, height=380):
                   annotation_text="Seuil critique 50 %",
                   annotation_position="bottom left",
                   annotation_font=dict(color=RED, size=11))
-    fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 105])
+    fig.update_layout(yaxis_title="TRS (%)", yaxis_range=[0, 105],
+                      xaxis_tickformat="%d/%m")
     return style_fig(fig, height)
 
 
@@ -295,7 +304,8 @@ def fig_risque(risque, focus=None, height=None):
     ))
     for seuil in (0.30, 0.60):
         fig.add_vline(x=seuil, line_dash="dot", line_color=GHOST, line_width=1)
-    fig.update_layout(xaxis_range=[0, 1.25], xaxis_tickformat=".0%", bargap=0.35)
+    fig.update_layout(xaxis_range=[0, 1.25], xaxis_tickformat=".0%", bargap=0.35,
+                      xaxis_tickvals=[0, 0.2, 0.4, 0.6, 0.8, 1])
     return style_fig(fig, height or 70 + 46 * len(r), legende=False)
 
 
@@ -492,7 +502,7 @@ def page_vue_ensemble(cle):
             ]),
         ]),
         html.Div(className="grid grid-4", children=[
-            kpi("TRS global", pct(trs), f"{pct(trs - SEUIL_EXCELLENCE, 1, signe=True)} vs objectif 85 %",
+            kpi("TRS global", pct(trs), ecart_objectif(trs),
                 couleur_trs(trs)),
             kpi("Machine la plus faible", pire["machine"], f"TRS {pct(pire['trs'])}",
                 couleur_trs(pire["trs"])),
@@ -833,7 +843,7 @@ def maj_analyse(sel, debut, fin, focus, cle):
     trs = trs_global(dff)
     kpis = [
         kpi("TRS global", pct(trs),
-            f"{pct(trs - SEUIL_EXCELLENCE, 1, signe=True)} vs objectif 85 %", couleur_trs(trs)),
+            ecart_objectif(trs), couleur_trs(trs)),
         kpi("Disponibilité", pct(dff["dispo"].mean())),
         kpi("Performance", pct(dff["perf"].mean())),
         kpi("Qualité", pct(dff["qual"].mean())),

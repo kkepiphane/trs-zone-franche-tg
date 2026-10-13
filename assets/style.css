@@ -14,6 +14,13 @@
   --border: #E6EAF0;
   --radius: 14px;
   --sidebar: 248px;
+
+  /* composants dcc de Dash 4 (slider, dropdown, calendrier) aux couleurs du theme */
+  --Dash-Fill-Interactive-Strong: #1B2A4A;
+  --Dash-Fill-Interactive-Weak: #E3E9F2;
+  --Dash-Fill-Primary-Hover: #EEF2F8;
+  --Dash-Fill-Primary-Active: #E3E9F2;
+  --Dash-Text-Primary: #1B2A4A;
 }
 
 * { box-sizing: border-box; }
