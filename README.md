@@ -174,3 +174,7 @@ entraîne** dans le notebook, on **déploie** le modèle figé dans l'applicatio
 ## Technologies
 
 Python · Pandas · NumPy · Scikit-learn · Plotly Dash · Joblib · Jupyter
+
+## Licence
+
+Distribué sous licence [MIT](LICENSE) © 2026 KOUTSAVA Kossi Epiphane.
